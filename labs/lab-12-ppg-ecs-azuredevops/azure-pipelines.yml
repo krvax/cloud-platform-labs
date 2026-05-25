@@ -1,0 +1,115 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  AWS_DEFAULT_REGION: 'us-east-1'
+  PROJECT_NAME: 'ecs-fastapi-lab'
+  TF_WORKING_DIR: 'labs/lab-12-ppg-ecs-azuredevops/terraform'
+  APP_WORKING_DIR: 'labs/lab-12-ppg-ecs-azuredevops/app'
+  ECR_REPO: '577638390094.dkr.ecr.us-east-1.amazonaws.com/ecs-fastapi-lab-repo'
+
+stages:
+  - stage: CI
+    displayName: 'Build and Push Docker Image'
+    jobs:
+      - job: TestBuildPush
+        steps:
+          - checkout: self
+
+          - task: AWSCLI@1
+            displayName: 'Verify AWS credentials via OIDC'
+            inputs:
+              awsCredentials: 'aws-oidc-ecs-lab'
+              regionName: $(AWS_DEFAULT_REGION)
+              awsCommand: 'sts'
+              awsSubCommand: 'get-caller-identity'
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Use Python 3.11'
+
+          - script: |
+              cd $(APP_WORKING_DIR)
+              pip install -r requirements.txt
+              pytest -v
+            displayName: 'Run tests'
+
+          - script: |
+              aws ecr get-login-password --region $(AWS_DEFAULT_REGION) \
+                | docker login --username AWS --password-stdin $(ECR_REPO)
+            displayName: 'Login to ECR'
+            env:
+              AWS_DEFAULT_REGION: $(AWS_DEFAULT_REGION)
+
+          - script: |
+              cd $(APP_WORKING_DIR)
+              docker build -t $(ECR_REPO):$(Build.BuildId) .
+              docker tag $(ECR_REPO):$(Build.BuildId) $(ECR_REPO):latest
+              docker push $(ECR_REPO):$(Build.BuildId)
+              docker push $(ECR_REPO):latest
+            displayName: 'Build and push Docker image'
+
+  - stage: CD
+    displayName: 'Terraform Apply and ECS Deploy'
+    dependsOn: CI
+    jobs:
+      - job: TerraformAndDeploy
+        steps:
+          - checkout: self
+
+          - task: AWSCLI@1
+            displayName: 'Verify AWS credentials via OIDC'
+            inputs:
+              awsCredentials: 'aws-oidc-ecs-lab'
+              regionName: $(AWS_DEFAULT_REGION)
+              awsCommand: 'sts'
+              awsSubCommand: 'get-caller-identity'
+
+          - script: |
+              curl -fsSL https://releases.hashicorp.com/terraform/1.15.2/terraform_1.15.2_linux_amd64.zip -o terraform.zip
+              unzip terraform.zip
+              sudo mv terraform /usr/local/bin/
+              terraform version
+            displayName: 'Install Terraform 1.15.2'
+
+          - script: |
+              cd $(TF_WORKING_DIR)
+              terraform init \
+                -backend-config="bucket=ecs-lab-tfstate-577638390094" \
+                -backend-config="key=$(PROJECT_NAME)/terraform.tfstate" \
+                -backend-config="region=$(AWS_DEFAULT_REGION)" \
+                -backend-config="use_lockfile=true"
+
+              terraform plan \
+                -var="aws_region=$(AWS_DEFAULT_REGION)" \
+                -var="project_name=$(PROJECT_NAME)" \
+                -var="azure_devops_org=coatl-tech" \
+                -var="azure_devops_project=ecs-azuredevops-lab" \
+                -out=tfplan
+
+              terraform apply -auto-approve tfplan
+            displayName: 'Terraform init/plan/apply'
+
+          - script: |
+              aws ecs update-service \
+                --cluster $(PROJECT_NAME)-cluster \
+                --service $(PROJECT_NAME)-service \
+                --force-new-deployment \
+                --region $(AWS_DEFAULT_REGION)
+
+              aws ecs wait services-stable \
+                --cluster $(PROJECT_NAME)-cluster \
+                --services $(PROJECT_NAME)-service \
+                --region $(AWS_DEFAULT_REGION)
+            displayName: 'Force ECS deployment and wait'
+
+          - script: |
+              cd $(TF_WORKING_DIR)
+              terraform output alb_dns_name
+            displayName: 'Show ALB URL'

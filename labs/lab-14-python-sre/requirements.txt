@@ -1,0 +1,6 @@
+boto3==1.34.100
+httpx==0.27.0
+pytest==8.2.0
+moto[s3,ec2]==5.0.5
+rich==13.7.1
+ollama==0.1.8
