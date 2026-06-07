@@ -1,0 +1,34 @@
+# Default deny ALL ingress in onprem-dc (simula VPC sin rutas)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: onprem-dc
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Allow ONLY pods with label "access: vpn" from cloud-vpc (simula túnel VPN)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vpn-from-cloud
+  namespace: onprem-dc
+spec:
+  podSelector:
+    matchLabels:
+      app: legacy-app
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          environment: cloud
+      podSelector:
+        matchLabels:
+          access: vpn
+    ports:
+    - protocol: TCP
+      port: 80

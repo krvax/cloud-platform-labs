@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloud-vpc
+  labels:
+    environment: cloud
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: onprem-dc
+  labels:
+    environment: onprem
